@@ -1,5 +1,5 @@
 # pki-manager
-A Bash-based Public Key Infrastructure (PKI) managment tool that helps setup and maintain SSL/TLS certs. This tool uses elliptic curve cryptography for certificates.
+A Bash-based, Public Key Infrastructure (PKI) managment tool that creates a local root Certificate Authority (CA) and Intermediate Certificate Authorty for the purpose of creating and signing TLS certificates. This tool uses elliptic curve cryptography for certificates.
 
 ## Features
 
