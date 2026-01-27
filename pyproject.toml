@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pki-mcp-server"
+version = "1.0.0"
+description = "PKI management MCP server using elliptic curve cryptography"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [
+    { name = "PKI Manager" }
+]
+keywords = ["pki", "mcp", "certificates", "cryptography"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "mcp>=1.2.0",
+    "cryptography>=41.0.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "uvicorn>=0.30.0",
+    "starlette>=0.38.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=5.0.0",
+]
+
+[project.scripts]
+pki-mcp-server = "pki_mcp_server.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pki_mcp_server"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

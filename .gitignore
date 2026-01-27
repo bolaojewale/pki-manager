@@ -1,6 +1,7 @@
 # Configurations
 config.env
 openssl.conf
+.env
 
 # PKI directories
 *pki/
@@ -13,3 +14,52 @@ backups/
 .DS_Store
 *.swp
 *.swo
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# IDE
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Docker
+.docker/

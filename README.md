@@ -1,5 +1,8 @@
 # pki-manager
-A Bash-based, Public Key Infrastructure (PKI) managment tool that creates a local root Certificate Authority (CA) and Intermediate Certificate Authorty for the purpose of creating and signing TLS certificates. This tool uses elliptic curve cryptography for certificates.
+
+A PKI management tool that creates a local root Certificate Authority (CA) and Intermediate Certificate Authority for the purpose of creating and signing TLS certificates. This tool uses elliptic curve cryptography for certificates.
+
+Available as both a **Bash script** (original) and a **Python MCP Server** for integration with AI assistants like Claude.
 
 ## Features
 
@@ -10,18 +13,41 @@ A Bash-based, Public Key Infrastructure (PKI) managment tool that creates a loca
 - Automatic backup functionality
 - Full & intermediate certificate chain creation
 - Backup and offline root CA
+- **MCP Server** for AI assistant integration (Claude Code, etc.)
+- **Docker deployment** for persistent PKI server
 
 ## Prerequisites
 
+### Bash Script
 - OpenSSL 1.1.1 or later (3.0.0 or later recommended)
 - Bash 4.0 or later (5.1.16 or later recommended)
 - Basic understanding of PKI concepts
 
+### Python MCP Server
+- Python 3.11 or later
+- Docker (optional, for containerized deployment)
+
 ## File Structure
 ```bash
-├── pki-manager.sh        # Main PKI management script
-├── config.env.example    # Template for configuration
-└── openssl.conf.example   # Template for OpenSSL configuration
+├── pki-manager.sh           # Original Bash PKI management script
+├── config.env.example       # Template for Bash script configuration
+├── openssl.conf.example     # Template for OpenSSL configuration
+│
+├── pki_mcp_server/          # Python MCP server
+│   ├── __init__.py
+│   ├── __main__.py          # Entry point
+│   ├── server.py            # FastMCP server + tool definitions
+│   ├── config.py            # Pydantic configuration models
+│   └── pki/                 # PKI operations
+│       ├── ca.py            # Root/Intermediate CA operations
+│       ├── certificates.py  # Leaf certificate generation
+│       ├── chains.py        # Certificate chain management
+│       └── backup.py        # Backup operations
+│
+├── tests/                   # Test suite
+├── Dockerfile               # Container build
+├── docker-compose.yml       # Easy local deployment
+└── pyproject.toml           # Python project config
 ```
 
 ## Installation
@@ -184,12 +210,121 @@ Creates a backup of the PKI directory:
    openssl req -config openssl.conf -test
    ```
 
+## MCP Server
+
+The Python MCP (Model Context Protocol) server allows AI assistants like Claude to manage PKI operations directly.
+
+### Installation
+
+```bash
+# Install from source
+pip install .
+
+# Or install with dev dependencies
+pip install ".[dev]"
+```
+
+### Running the MCP Server
+
+#### STDIO Transport (Local Development)
+
+```bash
+python -m pki_mcp_server
+```
+
+#### SSE Transport (Docker/Remote)
+
+```bash
+python -m pki_mcp_server --transport sse --port 8000
+```
+
+### Docker Deployment
+
+```bash
+# Build and run with Docker Compose
+docker compose up -d
+
+# View logs
+docker compose logs -f
+```
+
+### Claude Code Integration
+
+Add to your Claude Code MCP configuration:
+
+**Remote Server (Docker)**
+```json
+{
+  "mcpServers": {
+    "pki-manager": {
+      "url": "http://localhost:8000/sse"
+    }
+  }
+}
+```
+
+**Local Development (STDIO)**
+```json
+{
+  "mcpServers": {
+    "pki-manager": {
+      "command": "python",
+      "args": ["-m", "pki_mcp_server"],
+      "env": {
+        "PKI_ROOT_DIR": "./pki",
+        "PKI_ORGANIZATION": "MyOrg"
+      }
+    }
+  }
+}
+```
+
+### MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `pki_init` | Initialize PKI with Root + Intermediate CA |
+| `pki_new_cert` | Generate leaf certificate for a service |
+| `pki_check` | Check certificate expiration |
+| `pki_backup` | Backup PKI directory (excludes private keys) |
+| `pki_offline_root` | Secure root CA key offline |
+| `pki_status` | Get PKI status (initialized, root online/offline) |
+| `pki_list_services` | List all services with certificates |
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PKI_ROOT_DIR` | `pki` | Root directory for PKI files |
+| `PKI_BACKUP_DIR` | `backups` | Directory for backups |
+| `PKI_CURVE` | `prime256v1` | EC curve (prime256v1, secp384r1, secp521r1) |
+| `PKI_ORGANIZATION` | `Home` | Organization name for certificates |
+| `PKI_COUNTRY` | `US` | Two-letter country code |
+| `PKI_STATE` | `State` | State or province |
+| `PKI_LOCALITY` | `City` | City or locality |
+| `PKI_ROOT_VALIDITY` | `1460` | Root CA validity (days) |
+| `PKI_INTERMEDIATE_VALIDITY` | `730` | Intermediate CA validity (days) |
+| `PKI_LEAF_VALIDITY` | `180` | Leaf certificate validity (days) |
+
+### Running Tests
+
+```bash
+# Install dev dependencies
+pip install ".[dev]"
+
+# Run tests
+pytest
+
+# Run with coverage
+pytest --cov=pki_mcp_server
+```
+
 ## Future Planned Features
 
-- Certificate Revocation
-- Interactive init
-- Dockerized Version
-- Webserver to serve/download certificates
+- Certificate Revocation (`pki_revoke_cert` tool)
+- CRL (Certificate Revocation List) generation and distribution
+- OCSP responder support
+- n8n custom node integration
 
 ## License
 

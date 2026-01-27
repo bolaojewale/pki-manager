@@ -1,0 +1,39 @@
+services:
+  pki-manager:
+    build: .
+    container_name: pki-manager
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persistent PKI data
+      - pki-data:/data/pki
+      # Persistent backups
+      - pki-backups:/data/backups
+    environment:
+      # PKI configuration
+      - PKI_ROOT_DIR=/data/pki
+      - PKI_BACKUP_DIR=/data/backups
+      - PKI_LOG_FILE=/data/pki-manager.log
+      # Certificate defaults (customize these)
+      - PKI_ORGANIZATION=MyOrg
+      - PKI_COUNTRY=US
+      - PKI_STATE=State
+      - PKI_LOCALITY=City
+      # Cryptographic settings
+      - PKI_CURVE=prime256v1
+      # Validity periods (days)
+      - PKI_ROOT_VALIDITY=1460
+      - PKI_INTERMEDIATE_VALIDITY=730
+      - PKI_LEAF_VALIDITY=180
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.connect(('localhost', 8000)); s.close()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  pki-data:
+    name: pki-manager-data
+  pki-backups:
+    name: pki-manager-backups
