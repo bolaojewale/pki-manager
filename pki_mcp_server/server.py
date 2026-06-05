@@ -115,11 +115,25 @@ def pki_new_cert(
         bool,
         Field(description="If true, overwrite existing service certificate"),
     ] = False,
+    cert_type: Annotated[
+        str,
+        Field(description="Certificate type: 'server' (default) for TLS servers, 'client' for client authentication"),
+    ] = "server",
 ) -> dict:
     """Generate a new leaf certificate for a service.
 
     Creates a new EC private key (if no CSR provided), generates a certificate
     signed by the Intermediate CA, and creates the certificate chain file.
+
+    Server certificates (cert_type="server"):
+    - Used for HTTPS, TLS servers
+    - ExtendedKeyUsage: serverAuth
+    - KeyUsage: digitalSignature, keyEncipherment
+
+    Client certificates (cert_type="client"):
+    - Used for mutual TLS (mTLS), client authentication
+    - ExtendedKeyUsage: clientAuth
+    - KeyUsage: digitalSignature
 
     Args:
         service_name: Identifier for the service.
@@ -127,6 +141,7 @@ def pki_new_cert(
         alternate_names: Additional DNS names or IP addresses.
         csr_path: Path to existing CSR (optional - key won't be generated).
         overwrite: Replace existing certificate for this service.
+        cert_type: "server" (default) or "client".
 
     Returns:
         Dictionary with paths to certificate, key, and chain files.
@@ -142,6 +157,7 @@ def pki_new_cert(
             alternate_names=alternate_names,
             csr_path=csr,
             overwrite=overwrite,
+            cert_type=cert_type,
         )
 
         # Create service chain
@@ -150,7 +166,7 @@ def pki_new_cert(
 
         return {
             "status": "success",
-            "message": f"Certificate generated for {service_name}",
+            "message": f"{cert_type.capitalize()} certificate generated for {service_name}",
             **result,
         }
 

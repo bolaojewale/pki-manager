@@ -157,3 +157,41 @@ class TestMCPTools:
 
         assert result["status"] == "success"
         assert "backup_file" in result
+
+    def test_pki_new_cert_client(self):
+        """Test client certificate generation."""
+        pki_init()
+        result = pki_new_cert(
+            "api-client",
+            "client.example.com",
+            cert_type="client",
+        )
+
+        assert result["status"] == "success"
+        assert result["cert_type"] == "client"
+        assert "Client certificate generated" in result["message"]
+
+    def test_pki_new_cert_server_explicit(self):
+        """Test explicit server certificate generation."""
+        pki_init()
+        result = pki_new_cert(
+            "web-server",
+            "server.example.com",
+            cert_type="server",
+        )
+
+        assert result["status"] == "success"
+        assert result["cert_type"] == "server"
+        assert "Server certificate generated" in result["message"]
+
+    def test_pki_new_cert_invalid_type(self):
+        """Test certificate generation with invalid type."""
+        pki_init()
+        result = pki_new_cert(
+            "test-service",
+            "test.example.com",
+            cert_type="invalid",
+        )
+
+        assert result["status"] == "error"
+        assert "Invalid cert_type" in result["message"]

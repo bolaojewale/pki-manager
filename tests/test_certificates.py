@@ -207,3 +207,73 @@ class TestCertificateManager:
         service_names = [s["name"] for s in result["services"]]
         assert "nginx" in service_names
         assert "apache" in service_names
+
+    def test_generate_client_certificate(
+        self,
+        cert_manager: CertificateManager,
+        ca_manager: CAManager,
+        initialized_pki: dict,
+        test_config: PKIConfig,
+    ):
+        """Test client certificate generation."""
+        result = cert_manager.generate_certificate(
+            "api-client",
+            "client.example.com",
+            cert_type="client",
+        )
+
+        assert result["service_name"] == "api-client"
+        assert result["cert_type"] == "client"
+
+        # Load and verify certificate extensions
+        cert = ca_manager.load_certificate(test_config.service_cert_path("api-client"))
+
+        # Check ExtendedKeyUsage is clientAuth
+        eku_ext = cert.extensions.get_extension_for_class(x509.ExtendedKeyUsage)
+        assert x509.oid.ExtendedKeyUsageOID.CLIENT_AUTH in eku_ext.value
+
+        # Check KeyUsage - should NOT have keyEncipherment
+        ku_ext = cert.extensions.get_extension_for_class(x509.KeyUsage)
+        assert ku_ext.value.digital_signature is True
+        assert ku_ext.value.key_encipherment is False
+
+    def test_generate_server_certificate_explicit(
+        self,
+        cert_manager: CertificateManager,
+        ca_manager: CAManager,
+        initialized_pki: dict,
+        test_config: PKIConfig,
+    ):
+        """Test explicit server certificate generation."""
+        result = cert_manager.generate_certificate(
+            "web-server",
+            "server.example.com",
+            cert_type="server",
+        )
+
+        assert result["cert_type"] == "server"
+
+        # Load and verify certificate extensions
+        cert = ca_manager.load_certificate(test_config.service_cert_path("web-server"))
+
+        # Check ExtendedKeyUsage is serverAuth
+        eku_ext = cert.extensions.get_extension_for_class(x509.ExtendedKeyUsage)
+        assert x509.oid.ExtendedKeyUsageOID.SERVER_AUTH in eku_ext.value
+
+        # Check KeyUsage - should have keyEncipherment
+        ku_ext = cert.extensions.get_extension_for_class(x509.KeyUsage)
+        assert ku_ext.value.digital_signature is True
+        assert ku_ext.value.key_encipherment is True
+
+    def test_generate_certificate_invalid_cert_type(
+        self,
+        cert_manager: CertificateManager,
+        initialized_pki: dict,
+    ):
+        """Test certificate generation with invalid cert_type."""
+        with pytest.raises(ValueError, match="Invalid cert_type"):
+            cert_manager.generate_certificate(
+                "test-service",
+                "test.example.com",
+                cert_type="invalid",
+            )
