@@ -114,6 +114,40 @@ LEAF_VALIDITY=180          # 6 months
 
 Adjust the validity periods to your own preferences.
 
+### CA File Naming and OpenSSL Environment Variables
+
+The root and intermediate CA `.key`, `.crt`, and `.csr` files are **named after
+their CommonName**, lowercased with spaces replaced by dashes. For example:
+
+```bash
+ROOT_CN="Root CA"           # -> pki/root/certs/root-ca.crt
+INTERMEDIATE_CN="Intermediate CA"  # -> .../intermediate-ca.crt
+```
+
+Because those filenames are not known until `config.env` is read, `openssl.conf`
+locates the CA key/cert through environment variables instead of hardcoded
+paths (`private_key = $ENV::ROOT_CA_KEY`, `certificate = $ENV::ROOT_CA_CERT`,
+and the intermediate equivalents). `pki-manager.sh` exports these on every run,
+so all script commands work without any extra steps:
+
+| Variable | Points to |
+|----------|-----------|
+| `ROOT_CA_KEY`          | Root CA private key |
+| `ROOT_CA_CERT`         | Root CA certificate |
+| `INTERMEDIATE_CA_KEY`  | Intermediate CA private key |
+| `INTERMEDIATE_CA_CERT` | Intermediate CA certificate |
+
+> **Running OpenSSL by hand:** if you invoke `openssl ca ...` directly against
+> `openssl.conf` (outside the script), you must export these four variables
+> first, or OpenSSL fails with `variable has no value`:
+>
+> ```bash
+> export ROOT_CA_KEY="pki/root/private/root-ca.key"
+> export ROOT_CA_CERT="pki/root/certs/root-ca.crt"
+> export INTERMEDIATE_CA_KEY="pki/intermediate/private/intermediate-ca.key"
+> export INTERMEDIATE_CA_CERT="pki/intermediate/certs/intermediate-ca.crt"
+> ```
+
 ## Usage
 
 ### Initialize PKI Structure
@@ -126,11 +160,11 @@ Creates the PKI directory structure and generates root/intermediate CAs:
 ### Install Root Certificate
 The cert you want to install in your machines' trust stores is the root CA certificate:
 
-pki/root/certs/ca.crt
+pki/root/certs/root-ca.crt
 
 Why the root, not the intermediate. This is a two-tier PKI:
 
-Root CA (ca.crt)  ──signs──►  Intermediate CA (intermediate.crt)  ──signs──►  service certs
+Root CA (root-ca.crt)  ──signs──►  Intermediate CA (intermediate-ca.crt)  ──signs──►  service certs
 
 A client trusts a service cert if it can build a chain from the service cert up to a CA it already trusts. If you
 install the root, the client can validate the whole chain (root → intermediate → service). That's the one cert you
@@ -145,27 +179,27 @@ Installing the root is necessary but not sufficient. Each service must present i
 client can link the service cert back to the trusted root. Clients don't fetch the intermediate on their own here.
 That's what this file is for:
 
-pki/chains/cybertron-intermediate-chain.crt
+pki/chains/intermediate-chain.crt
 
 Configure the service (nginx, etc.) to serve that chain as its certificate file. Do not put the root in the served
 chain — the client already has it.
 
 Installing the root CA on clients
 
-- Linux (Debian/Ubuntu): copy ca.crt to /usr/local/share/ca-certificates/cybertron-root.crt, then sudo
+- Linux (Debian/Ubuntu): copy root-ca.crt to /usr/local/share/ca-certificates/root-ca.crt, then sudo
 update-ca-certificates
 - Linux (RHEL/Fedora): copy to /etc/pki/ca-trust/source/anchors/, then sudo update-ca-trust
-- macOS: sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ca.crt
-- Windows: certutil -addstore -f Root ca.crt (as admin), or import into "Trusted Root Certification Authorities" via
+- macOS: sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain root-ca.crt
+- Windows: certutil -addstore -f Root root-ca.crt (as admin), or import into "Trusted Root Certification Authorities" via
 certmgr
 - Browsers: Firefox uses its own store (Settings → Certificates → Authorities → Import); Chrome/Edge use the OS store
 
-One caveat: distribute only the certificate (ca.crt) — never the root's private key (pki/root/private/). The cert is
+One caveat: distribute only the certificate (root-ca.crt) — never the root's private key (pki/root/private/). The cert is
 public and safe to push everywhere; the key must stay offline.
 
 root/newcerts/1000.pem is the Intermediate CA certificate, not a service cert:
 
-subject = CN=Intermediate CA   (O=Cybertron)
+subject = CN=Intermediate CA   (O=Home)
 issuer  = CN=Root CA           (the root signed it)
 valid   = Jun 5 2026  →  Jun 4 2028   (your 2-year INTERMEDIATE_VALIDITY)
 
@@ -177,40 +211,40 @@ root/index.txt:  V  280604104643Z  1000  unknown  /CN=Intermediate CA
 
 (V = valid, serial 1000, the intermediate.)
 
-1000.pem is a copy of intermediate.crt, produced as a byproduct of signing. Let me prove it:
+1000.pem is a copy of intermediate-ca.crt, produced as a byproduct of signing. Let me prove it:
 
-● Bash(echo "=== fingerprint: intermediate/certs/intermediate.crt ===" && openssl x509 -in
-   intermediate/certs/intermediate.crt -noout -fingerprint -sha256 2>/dev/null;…)
-⎿  === fingerprint: intermediate/certs/intermediate.crt ===
+● Bash(echo "=== fingerprint: intermediate/certs/intermediate-ca.crt ===" && openssl x509 -in
+   intermediate/certs/intermediate-ca.crt -noout -fingerprint -sha256 2>/dev/null;…)
+⎿  === fingerprint: intermediate/certs/intermediate-ca.crt ===
    sha256 Fingerprint=3E:6C:46:92:05:FB:3E:F1:E4:9D:60:67:23:78:C1:06:CB:E5:47:9D:8B:62:C6:85:2F:9F:34:1A:95:F4:6
    9:8A
    … +3 lines (ctrl+o to expand)
 
 ● Identical fingerprints — they're the same certificate. 1000.pem did not create anything; it's an archived copy of
-intermediate.crt.
+intermediate-ca.crt.
 
 The actual order of operations during init
 
-1. Generate intermediate.key        ← a fresh private key, made first
-2. Build a CSR from intermediate.key ← "please sign me, CN=Intermediate CA"
-3. Root CA signs the CSR             ← root uses ITS key (root/private/ca.key)
+1. Generate intermediate-ca.key        ← a fresh private key, made first
+2. Build a CSR from intermediate-ca.key ← "please sign me, CN=Intermediate CA"
+3. Root CA signs the CSR             ← root uses ITS key (root/private/root-ca.key)
 4. Output written to TWO places at once:
-      → intermediate/certs/intermediate.crt   (the working copy you use)
+      → intermediate/certs/intermediate-ca.crt   (the working copy you use)
       → root/newcerts/1000.pem                (the root's archive copy)
 
 So the dependency runs the opposite way from what you asked:
 
-- intermediate.key is generated independently, first. Nothing creates it from 1000.pem.
-- intermediate.crt and 1000.pem are byte-for-byte the same file — both are the output of step 3.
+- intermediate-ca.key is generated independently, first. Nothing creates it from 1000.pem.
+- intermediate-ca.crt and 1000.pem are byte-for-byte the same file — both are the output of step 3.
 
 Why two copies exist
 
 root/newcerts/1000.pem is part of the root CA's bookkeeping, not something services use. Every time the root signs
 anything, OpenSSL files a copy under newcerts/<serial>.pem and logs a line in root/index.txt. It's the root's
 permanent record of "I issued this cert, serial 1000." You could delete root/newcerts/ and your PKI would still
-function — intermediate.crt is the copy that actually gets used in chains.
+function — intermediate-ca.crt is the copy that actually gets used in chains.
 
-Think of it as: the key is the secret (intermediate.key), the crt is the signed public document, and 1000.pem is the
+Think of it as: the key is the secret (intermediate-ca.key), the crt is the signed public document, and 1000.pem is the
 registrar's filed duplicate of that document.
 
 -
@@ -243,25 +277,25 @@ registrar's filed duplicate of that document.
 
   1b. generate_root_ca (line 235)
 
-  openssl ecparam -genkey -name prime256v1 -out root/private/ca.key   # the secret
+  openssl ecparam -genkey -name prime256v1 -out root/private/root-ca.key   # the secret
   openssl req -new -x509 -days 3560 -extensions v3_ca ...             # self-signed cert
   Two outputs:
-  - ca.key — the root private key. The crown jewels. Whoever has this is your CA.
-  - ca.crt — the root certificate. It's self-signed (issuer == subject == "Root CA") because there's nothing above it.
+  - root-ca.key — the root private key. The crown jewels. Whoever has this is your CA.
+  - root-ca.crt — the root certificate. It's self-signed (issuer == subject == "Root CA") because there's nothing above it.
   -extensions v3_ca stamps it CA:TRUE, meaning "this cert is allowed to sign other certs." This is the file you install
   on your computers.
 
   1c. generate_intermediate_ca (line 247)
 
   This is the three-move dance you asked about earlier:
-  openssl ecparam -genkey ... -out intermediate/private/intermediate.key   # 1. new key
-  openssl req -new -key intermediate.key -out intermediate.csr ...         # 2. CSR (a request)
+  openssl ecparam -genkey ... -out intermediate/private/intermediate-ca.key   # 1. new key
+  openssl req -new -key intermediate-ca.key -out intermediate-ca.csr ...         # 2. CSR (a request)
   openssl ca -name root_ca -extensions v3_intermediate_ca -in ...csr \     # 3. root signs it
-     -out intermediate/certs/intermediate.crt
+     -out intermediate/certs/intermediate-ca.crt
   - The CSR (Certificate Signing Request) is the intermediate saying "here's my public key and my name (CN=Intermediate
   CA) — please vouch for me." It's not a cert; it's an application.
   - The openssl ca step is the root reviewing and signing that application. This is the moment that:
-    - writes intermediate.crt (your working copy),
+    - writes intermediate-ca.crt (your working copy),
     - writes the identical root/newcerts/1000.pem (the root's archive — the duplicate you saw),
     - records a line in root/index.txt,
     - bumps root/serial to 1001.
@@ -272,17 +306,17 @@ registrar's filed duplicate of that document.
   1d. create_cert_chain (line 134)
 
   Bundles certs into ready-to-use files in chains/:
-  cat intermediate.crt root.crt  >  cybertron-ca-chain.crt          # full chain
-  cp  intermediate.crt           >  cybertron-intermediate-chain.crt # just intermediate
+  cat intermediate-ca.crt root-ca.crt  >  ca-chain.crt          # full chain
+  cp  intermediate-ca.crt           >  intermediate-chain.crt # just intermediate
   These exist so you don't have to assemble chains by hand later.
 
   ---
   Step 2 — distribute the trust anchor (the question you started with)
 
-  Install root/certs/ca.crt into every client's OS/browser trust store. Now those machines trust anything your PKI
+  Install root/certs/root-ca.crt into every client's OS/browser trust store. Now those machines trust anything your PKI
   signs, forever (until the root's 10-year validity expires). You do this once per machine.
 
-  You never distribute ca.key. Public cert out to the world; private key stays locked down.
+  You never distribute root-ca.key. Public cert out to the world; private key stays locked down.
 
   ---
   Step 3 — new-cert issues a service certificate (pki-manager.sh:526 → generate_leaf_cert line 356)
@@ -312,7 +346,7 @@ registrar's filed duplicate of that document.
 
   3b. create_service_chain (line 156)
 
-  cat nginx.crt intermediate.crt > services/nginx/chains/nginx-chain.crt
+  cat nginx.crt intermediate-ca.crt > services/nginx/chains/nginx-chain.crt
   This leaf + intermediate bundle is what you hand to nginx. It deliberately omits the root — the client already has the
   root installed (Step 2), and a server shouldn't send its own trust anchor.
 
@@ -333,7 +367,7 @@ registrar's filed duplicate of that document.
   Step 5 — operational lifecycle
 
   - offline-root PATH (line 70): backs up the root key/cert + ledger to an encrypted tarball with checksums, then shreds
-  ca.key off disk. This is best practice: an attacker can't steal a key that isn't there. You only restore it from
+  root-ca.key off disk. This is best practice: an attacker can't steal a key that isn't there. You only restore it from
   backup on the rare occasion you need to issue a new intermediate. The intermediate stays online for daily new-cert
   work.
   - check [service] (line 436): reads each cert's notAfter and warns under 30 days. Your validities — root 10yr,
@@ -345,7 +379,7 @@ registrar's filed duplicate of that document.
   ---
   The one-paragraph version
 
-  init makes a self-signed Root CA (ca.crt — install this everywhere), which signs an Intermediate CA (intermediate.crt
+  init makes a self-signed Root CA (root-ca.crt — install this everywhere), which signs an Intermediate CA (intermediate-ca.crt
   — the duplicate you found at root/newcerts/1000.pem). Day to day, new-cert has the intermediate sign short-lived
   service certs, bundled with the intermediate as a chain you feed to nginx. Clients trust those services because the
   chain leads back to the root they already have installed. Then you take the root offline and rotate leaves as they
@@ -468,7 +502,7 @@ Creates a backup of the PKI directory:
 1. **Permission Denied**
    ```bash
    chmod 700 pki/root/private
-   chmod 400 pki/root/private/ca.key
+   chmod 400 pki/root/private/root-ca.key
    ```
 
 2. **Configuration Not Found**
@@ -482,4 +516,12 @@ Creates a backup of the PKI directory:
    ```bash
    openssl req -config openssl.conf -test
    ```
+
+4. **`variable has no value` (from OpenSSL)**
+   - `openssl.conf` resolves the CA key/cert paths via `$ENV::ROOT_CA_KEY`,
+     `$ENV::ROOT_CA_CERT`, `$ENV::INTERMEDIATE_CA_KEY`, and
+     `$ENV::INTERMEDIATE_CA_CERT`. `pki-manager.sh` exports these automatically.
+   - This error only appears when running `openssl` **directly** against the
+     config; export the four variables first (see
+     [CA File Naming and OpenSSL Environment Variables](#ca-file-naming-and-openssl-environment-variables)).
    

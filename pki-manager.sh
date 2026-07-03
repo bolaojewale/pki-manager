@@ -26,12 +26,25 @@ fi
 
 source "$CONFIG_FILE"
 
-# Set cert, key and csr paths
-ROOT_KEY="${ROOT_DIR}/root/private/ca.key"
-ROOT_CERT="${ROOT_DIR}/root/certs/ca.crt"
-INTERMEDIATE_KEY="${ROOT_DIR}/intermediate/private/intermediate.key"
-INTERMEDIATE_CERT="${ROOT_DIR}/intermediate/certs/intermediate.crt"
-INTERMEDIATE_CSR="${ROOT_DIR}/intermediate/csr/intermediate.csr"
+# Set cert, key and csr paths.
+# The root and intermediate file basenames are derived from their CommonName,
+# lowercased with spaces replaced by dashes, e.g.
+#   ROOT_CN="Cybertron Root CA" -> cybertron-root-ca.{key,crt}
+ROOT_SLUG="$(echo "${ROOT_CN}" | tr '[:upper:] ' '[:lower:]-')"
+INTERMEDIATE_SLUG="$(echo "${INTERMEDIATE_CN}" | tr '[:upper:] ' '[:lower:]-')"
+
+ROOT_KEY="${ROOT_DIR}/root/private/${ROOT_SLUG}.key"
+ROOT_CERT="${ROOT_DIR}/root/certs/${ROOT_SLUG}.crt"
+INTERMEDIATE_KEY="${ROOT_DIR}/intermediate/private/${INTERMEDIATE_SLUG}.key"
+INTERMEDIATE_CERT="${ROOT_DIR}/intermediate/certs/${INTERMEDIATE_SLUG}.crt"
+INTERMEDIATE_CSR="${ROOT_DIR}/intermediate/csr/${INTERMEDIATE_SLUG}.csr"
+
+# Exported so openssl.conf can locate the CA key/cert via $ENV:: — their
+# filenames are not known statically because they come from the CN values above.
+export ROOT_CA_KEY="${ROOT_KEY}"
+export ROOT_CA_CERT="${ROOT_CERT}"
+export INTERMEDIATE_CA_KEY="${INTERMEDIATE_KEY}"
+export INTERMEDIATE_CA_CERT="${INTERMEDIATE_CERT}"
 
 # Logging function
 log() {

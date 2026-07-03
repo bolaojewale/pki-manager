@@ -20,9 +20,10 @@ serial            = $dir/serial           # Serial number file
 crlnumber         = $dir/crlnumber        # CRL sequence number file
 RANDFILE          = $dir/private/.rand    # Random number file
 
-# The root key and root certificate
-private_key       = $dir/private/ca.key   # Root CA private key
-certificate       = $dir/certs/ca.crt     # Root CA certificate
+# The root key and root certificate. Basenames are derived from ROOT_CN by
+# pki-manager.sh and passed in via the environment (spaces become dashes).
+private_key       = $ENV::ROOT_CA_KEY     # Root CA private key
+certificate       = $ENV::ROOT_CA_CERT    # Root CA certificate
 
 # For certificate revocation lists
 default_crl_days  = 30                    # How long before next CRL
@@ -47,8 +48,9 @@ database          = $dir/index.txt
 serial            = $dir/serial
 crlnumber         = $dir/crlnumber
 RANDFILE          = $dir/private/.rand
-private_key       = $dir/private/intermediate.key
-certificate       = $dir/certs/intermediate.crt
+# Basenames derived from INTERMEDIATE_CN by pki-manager.sh (spaces -> dashes)
+private_key       = $ENV::INTERMEDIATE_CA_KEY
+certificate       = $ENV::INTERMEDIATE_CA_CERT
 
 default_days      = 365                # 1 years
 default_crl_days  = 30
