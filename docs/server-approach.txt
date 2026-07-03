@@ -1,0 +1,100 @@
+Good question — and the key insight is that "running this remotely" is really two separate jobs with very different
+  security needs. Splitting them is what makes a remote setup safe:
+
+  Job A: SIGNING (holds private keys)      → sensitive, lock down hard
+  Job B: DISTRIBUTION (serves public certs) → harmless, make it easy to reach
+
+  The certs your machines download (ca.crt, chains, .p12) are public — safe to put anywhere. The signing keys are the
+  crown jewels. Most "host my PKI" mistakes come from putting both on the same internet-facing box.
+
+  ---
+  Job B — distribution (the "download the certs" part)
+
+  This is the easy, safe half. You just need to serve pki/chains/ and pki/root/certs/ca.crt as static files. Options,
+  easiest first:
+
+  - Static file server in Docker — Caddy or nginx serving the chains/ dir. Caddy is the lightest (auto-HTTPS, one-line
+  config). A throwaway python3 -m http.server works for testing. Then on clients: curl -fsSL https://pki.lan/ca.crt |
+  sudo tee /usr/local/share/ca-certificates/.... This plugs straight into the Ansible/cloud-init automation we
+  discussed.
+  - Cloudflare R2 / Pages — you've got a Cloudflare account connected. Drop the public certs in an R2 bucket or a Pages
+  site and you get a global HTTPS URL with zero servers to maintain. Ideal since the files are public anyway.
+  - Object storage / GitHub — an S3 bucket, or even a public GitHub repo holding only the public certs. Free, durable,
+  downloadable from anywhere.
+
+  For any of these, publish only public files — never pki/root/private/ or service .key files.
+
+  ---
+  Job A — signing (running the CA itself remotely)
+
+  Your pki-manager.sh only needs bash + openssl, so it containerizes trivially:
+
+  - Docker container with a persistent volume for pki/. Run signing via docker exec. Keep it on your internal network
+  only — no public ports. A Proxmox LXC works equally well and fits your existing setup.
+  - Root offline, intermediate online — this is the important pattern. Use your offline-root command so the always-on
+  box holds only the intermediate key for day-to-day new-cert work. The root key lives on encrypted offline media and
+  only comes back to issue a new intermediate. That way a compromise of the remote box can't forge a new root.
+
+  ---
+  The upgrade path: a real online CA
+
+  Honest take — your bash script is excellent for a manual/scripted PKI, but if what you actually want is a remote
+  service that issues and auto-renews certs on demand, there are purpose-built tools that do exactly that and run great
+  in Docker:
+
+  - step-ca (Smallstep) — an open-source online CA with an ACME endpoint. Your machines request and auto-renew certs the
+  same way Let's Encrypt works, but internal. Runs as one container. Best part: your existing root can sign step-ca's
+  intermediate, so you keep your trust anchor and just bolt on automated issuance. This kills the "leaf cert expired, UI
+  is down" problem entirely.
+  - HashiCorp Vault (PKI engine) — heavier, API-driven, great if you're already in that ecosystem.
+
+  For your Proxmox/homelab scale, step-ca in Docker is the sweet spot: it solves both jobs (issues and serves) and
+  removes the manual re-issue toil.
+
+  ---
+  My suggested shape for you
+
+  A small Docker host (or Proxmox LXC) running step-ca (intermediate signed by your offline pki-manager root) for
+  issuance, plus a Caddy static server or Cloudflare R2 publishing the public root/chain for trust-store distribution.
+  A small Docker host (or Proxmox LXC) running step-ca (intermediate signed by your offline pki-manager root) for
+  issuance, plus a Caddy static server or Cloudflare R2 publishing the public root/chain for trust-store distribution.
+
+
+  For any of these, publish only public files — never pki/root/private/ or service .key files.
+
+  ---
+  Job A — signing (running the CA itself remotely)
+
+  Your pki-manager.sh only needs bash + openssl, so it containerizes trivially:
+
+  - Docker container with a persistent volume for pki/. Run signing via docker exec. Keep it on your internal network only — no public ports. A Proxmox LXC works equally well and fits your
+  existing setup.
+  - Root offline, intermediate online — this is the important pattern. Use your offline-root command so the always-on box holds only the intermediate key for day-to-day new-cert work. The
+  root key lives on encrypted offline media and only comes back to issue a new intermediate. That way a compromise of the remote box can't forge a new root.
+
+  ---
+  The upgrade path: a real online CA
+
+  Honest take — your bash script is excellent for a manual/scripted PKI, but if what you actually want is a remote service that issues and auto-renews certs on demand, there are
+  purpose-built tools that do exactly that and run great in Docker:
+
+  - step-ca (Smallstep) — an open-source online CA with an ACME endpoint. Your machines request and auto-renew certs the same way Let's Encrypt works, but internal. Runs as one container.
+  Best part: your existing root can sign step-ca's intermediate, so you keep your trust anchor and just bolt on automated issuance. This kills the "leaf cert expired, UI is down" problem
+  entirely.
+  - HashiCorp Vault (PKI engine) — heavier, API-driven, great if you're already in that ecosystem.
+
+  For your Proxmox/homelab scale, step-ca in Docker is the sweet spot: it solves both jobs (issues and serves) and removes the manual re-issue toil.
+
+  ---
+  My suggested shape for you
+
+  A small Docker host (or Proxmox LXC) running step-ca (intermediate signed by your offline pki-manager root) for issuance, plus a Caddy static server or Cloudflare R2 publishing the
+  public root/chain for trust-store distribution. That gives every VM both halves: a URL to fetch the root, and ACME to get its own short-lived cert automatically.
+
+  ---
+  Want me to:
+  1. Write a Dockerfile + compose that containerizes your existing pki-manager.sh with a persistent volume, and/or
+  2. Sketch a step-ca setup where your current root signs its intermediate, plus a Caddy/R2 distribution config?
+
+  Also — separately — your earlier note about the Proxmox password error after the cert mess is almost certainly not caused by a cert change. Happy to walk through that too; it's a
+  different (and fixable) problem. Which do you want first?

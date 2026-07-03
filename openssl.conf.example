@@ -17,6 +17,7 @@ certs             = $dir/certs            # Certificate storage
 new_certs_dir     = $dir/newcerts         # New certificates storage
 database          = $dir/index.txt        # Certificate database file
 serial            = $dir/serial           # Serial number file
+crlnumber         = $dir/crlnumber        # CRL sequence number file
 RANDFILE          = $dir/private/.rand    # Random number file
 
 # The root key and root certificate
@@ -44,6 +45,7 @@ certs             = $dir/certs
 new_certs_dir     = $dir/newcerts
 database          = $dir/index.txt
 serial            = $dir/serial
+crlnumber         = $dir/crlnumber
 RANDFILE          = $dir/private/.rand
 private_key       = $dir/private/intermediate.key
 certificate       = $dir/certs/intermediate.crt

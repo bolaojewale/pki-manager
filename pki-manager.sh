@@ -9,7 +9,7 @@
 # - Certificate expiration checking
 # - Automatic backup of critical files
 #
-# Usage: ./pki-manager.sh {init|offline-root|new-cert|check|backup} [options]
+# Usage: ./pki-manager.sh {init|offline-root|new-cert|revoke|gen-crl|check|backup} [options]
 
 set -euo pipefail   # error handling options
 
@@ -115,8 +115,10 @@ offline_root_ca() {
 
     log "Root CA backup created: ${root_backup_dir}.tar.gz"
 
-    # Remove the root key using shred
+    # Remove the root key using shred. The key is mode 400, so make it writable
+    # first or shred cannot open it for writing (and set -e would abort here).
     log "Proceeding to remove Root CA private key..."
+    chmod u+w "${ROOT_KEY}"
     shred -u "${ROOT_KEY}"
 
     if [[ -f "${ROOT_KEY}" ]]; then
@@ -228,6 +230,7 @@ create_directory_structure() {
     for dir in root intermediate; do
         [[ -f "${ROOT_DIR}/${dir}/index.txt" ]] || touch "${ROOT_DIR}/${dir}/index.txt"
         [[ -f "${ROOT_DIR}/${dir}/serial" ]] || echo 1000 > "${ROOT_DIR}/${dir}/serial"
+        [[ -f "${ROOT_DIR}/${dir}/crlnumber" ]] || echo 1000 > "${ROOT_DIR}/${dir}/crlnumber"
     done
 }
 
@@ -481,6 +484,127 @@ check_expiration() {
     fi
 }
 
+# Map a CA config name to its base directory on disk
+ca_dir_for() {
+    case "$1" in
+        root_ca)         echo "${ROOT_DIR}/root" ;;
+        intermediate_ca) echo "${ROOT_DIR}/intermediate" ;;
+        *) error "Unknown CA name '$1' (expected root_ca or intermediate_ca)" ;;
+    esac
+}
+
+# Function to (re)generate a CA's Certificate Revocation List (CRL)
+generate_crl() {
+    local ca_name="${1:-intermediate_ca}"
+    local ca_dir
+    ca_dir=$(ca_dir_for "${ca_name}")
+    local crl_path="${ca_dir}/crl/${ca_name}.crl"
+
+    mkdir -p "${ca_dir}/crl"
+
+    # PKIs created before CRL support won't have a crlnumber file; openssl
+    # ca -gencrl requires one whenever 'crlnumber' is set in the config.
+    [[ -f "${ca_dir}/crlnumber" ]] || echo 1000 > "${ca_dir}/crlnumber"
+
+    log "Generating CRL for ${ca_name}"
+    openssl ca -config "${OPENSSL_CNF}" -name "${ca_name}" -gencrl \
+        -crlexts crl_ext -out "${crl_path}"
+    chmod 644 "${crl_path}"
+
+    log "CRL written to ${crl_path}"
+}
+
+# Archive a service directory to the backup location
+archive_service() {
+    local SERVICE="$1"
+    local service_dir="${ROOT_DIR}/services/${SERVICE}"
+    local timestamp
+    timestamp=$(date +%Y%m%d_%H%M%S)
+    local archive="${BACKUP_DIR}/revoked-${SERVICE}-${timestamp}.tar.gz"
+
+    mkdir -p "${BACKUP_DIR}"
+
+    log "Archiving ${service_dir} to ${archive}"
+    tar czf "${archive}" -C "${ROOT_DIR}/services" "${SERVICE}"
+    chmod 600 "${archive}"
+
+    log "Service archive retained at ${archive}"
+}
+
+# Securely wipe a service's private keys, then remove the service directory
+shred_service_dir() {
+    local SERVICE="$1"
+    local service_dir="${ROOT_DIR}/services/${SERVICE}"
+
+    # Securely wipe private keys before removing the directory. Keys are mode
+    # 400, so make them writable first or shred cannot open them for writing.
+    if [[ -d "${service_dir}/private" ]]; then
+        find "${service_dir}/private" -type f -exec chmod u+w {} \; -exec shred -u {} \;
+    fi
+    rm -rf "${service_dir}"
+
+    log "Service directory ${service_dir} securely removed"
+}
+
+# Function to revoke a service (leaf) certificate and refresh the CRL
+revoke_cert() {
+    local SERVICE="$1"
+    local REASON="${2:-cessationOfOperation}"
+    local cert_path="${ROOT_DIR}/services/${SERVICE}/certs/${SERVICE}.crt"
+
+    if [[ ! -f "${cert_path}" ]]; then
+        error "Certificate for service '${SERVICE}' not found at ${cert_path}"
+    fi
+
+    # Validate the revocation reason against the values openssl accepts
+    case "${REASON}" in
+        unspecified|keyCompromise|CACompromise|affiliationChanged|\
+        superseded|cessationOfOperation|certificateHold|removeFromCRL) ;;
+        *) error "Invalid revocation reason '${REASON}'. Valid reasons: unspecified, keyCompromise, CACompromise, affiliationChanged, superseded, cessationOfOperation, certificateHold, removeFromCRL" ;;
+    esac
+
+    # Show what is about to be revoked
+    local serial subject
+    serial=$(openssl x509 -in "${cert_path}" -noout -serial | cut -d= -f2)
+    subject=$(openssl x509 -in "${cert_path}" -noout -subject | sed 's/^subject= *//')
+
+    log "About to revoke certificate for service '${SERVICE}'"
+    log "  Serial : ${serial}"
+    log "  Subject: ${subject}"
+    log "  Reason : ${REASON}"
+    read -p "Revoke this certificate? This cannot be undone. (yes/no) " answer
+    if [[ "${answer,,}" != "yes" ]]; then
+        log "Revocation cancelled"
+        exit 1
+    fi
+
+    # 1. Mark the cert as revoked in the intermediate CA database (index.txt)
+    log "Revoking certificate in the intermediate CA database"
+    openssl ca -config "${OPENSSL_CNF}" -name intermediate_ca \
+        -revoke "${cert_path}" -crl_reason "${REASON}"
+
+    # 2. Publish the revocation by regenerating the CRL
+    generate_crl intermediate_ca
+
+    log "Certificate for '${SERVICE}' revoked successfully"
+
+    # 3. Optionally archive the service directory to backups
+    read -p "Archive the '${SERVICE}' service directory to backups first? (yes/no) " answer
+    if [[ "${answer,,}" == "yes" ]]; then
+        archive_service "${SERVICE}"
+    fi
+
+    # 4. Optionally securely delete the service directory (shreds the private key)
+    read -p "Securely delete the '${SERVICE}' service directory now, including its private key? (yes/no) " answer
+    if [[ "${answer,,}" == "yes" ]]; then
+        shred_service_dir "${SERVICE}"
+    else
+        log "Service directory left in place at ${ROOT_DIR}/services/${SERVICE}"
+    fi
+
+    log "IMPORTANT: distribute the updated CRL to every system that validates certificates from this CA."
+}
+
 # Display help message
 show_help() {
     cat << EOF
@@ -492,6 +616,8 @@ Commands:
     init                                                        Initialize PKI directory structure and create root/intermediate CAs
     offline-root PATH                                           Creates backup of root CA and deletes private key from disk
     new-cert SERVICE DOMAIN [CSR-FILE] [ALTERNATE-NAMES...]     Generate a new certificate for a service, optionally from existing CSR
+    revoke SERVICE [REASON]                                     Revoke a service certificate and regenerate the CRL
+    gen-crl [CA-NAME]                                           (Re)generate a CRL (CA-NAME: intermediate_ca [default] or root_ca)
     check                                                       Prints list of all available services
     check SERVICE                                               Check certificate expiration for a service
     backup                                                      Create a backup of the PKI directory
@@ -502,6 +628,9 @@ Options:
     DOMAIN               Domain name for the certificate
     CSR-FILE             Certificate Service Request file path
     ALTERNATE-NAMES      Additional DNS names or IP addresses for the certificate
+    REASON               Revocation reason: unspecified, keyCompromise, CACompromise,
+                         affiliationChanged, superseded, cessationOfOperation (default),
+                         certificateHold, removeFromCRL
 
 
 Examples:
@@ -511,6 +640,9 @@ Examples:
     $(basename "$0") new-cert nginx example.com /path/to/nginx.csr
     $(basename "$0") new-cert nginx example.com 192.168.1.10 server2.local
     $(basename "$0") new-cert nginx example.com nginx.csr 192.168.1.10 server2.local
+    $(basename "$0") revoke gitlab
+    $(basename "$0") revoke gitlab keyCompromise
+    $(basename "$0") gen-crl
     $(basename "$0") check
     $(basename "$0") check nginx
     $(basename "$0") backup
@@ -570,6 +702,16 @@ case "$1" in
         # Remaining arguments are alternate names
         generate_leaf_cert "$SERVICE" "$DOMAIN" "$CSR_PATH" "$@"
         [[ "$BACKUP_ENABLED" == "true" ]] && backup_pki
+        ;;
+    "revoke")
+        if [ -z "${2:-}" ]; then
+            error "Usage: $0 revoke <service-name> [reason]"
+        fi
+        revoke_cert "$2" "${3:-cessationOfOperation}"
+        [[ "$BACKUP_ENABLED" == "true" ]] && backup_pki
+        ;;
+    "gen-crl")
+        generate_crl "${2:-intermediate_ca}"
         ;;
     "check")
         if [ -z "${2:-}" ]; then
