@@ -1,5 +1,8 @@
-# pki-manager
-A Bash-based, Public Key Infrastructure (PKI) managment tool that creates a local root Certificate Authority (CA) and Intermediate Certificate Authorty for the purpose of creating and signing TLS certificates. This tool uses elliptic curve cryptography for certificates.
+ # pki-manager
+
+A PKI management tool that creates a local root Certificate Authority (CA) and Intermediate Certificate Authority for the purpose of creating and signing TLS certificates. This tool uses elliptic curve cryptography for certificates.
+
+Available as both a **Bash script** (original) and a **Python MCP Server** for integration with AI assistants like Claude.
 
 ## Features
 
@@ -10,18 +13,41 @@ A Bash-based, Public Key Infrastructure (PKI) managment tool that creates a loca
 - Automatic backup functionality
 - Full & intermediate certificate chain creation
 - Backup and offline root CA
+- **MCP Server** for AI assistant integration (Claude Code, etc.)
+- **Docker deployment** for persistent PKI server
 
 ## Prerequisites
 
+### Bash Script
 - OpenSSL 1.1.1 or later (3.0.0 or later recommended)
 - Bash 4.0 or later (5.1.16 or later recommended)
 - Basic understanding of PKI concepts
 
+### Python MCP Server
+- Python 3.11 or later
+- Docker (optional, for containerized deployment)
+
 ## File Structure
 ```bash
-├── pki-manager.sh        # Main PKI management script
-├── config.env.example    # Template for configuration
-└── openssl.conf.example   # Template for OpenSSL configuration
+├── pki-manager.sh           # Original Bash PKI management script
+├── config.env.example       # Template for Bash script configuration
+├── openssl.conf.example     # Template for OpenSSL configuration
+│
+├── pki_mcp_server/          # Python MCP server
+│   ├── __init__.py
+│   ├── __main__.py          # Entry point
+│   ├── server.py            # FastMCP server + tool definitions
+│   ├── config.py            # Pydantic configuration models
+│   └── pki/                 # PKI operations
+│       ├── ca.py            # Root/Intermediate CA operations
+│       ├── certificates.py  # Leaf certificate generation
+│       ├── chains.py        # Certificate chain management
+│       └── backup.py        # Backup operations
+│
+├── tests/                   # Test suite
+├── Dockerfile               # Container build
+├── docker-compose.yml       # Easy local deployment
+└── pyproject.toml           # Python project config
 ```
 
 ## Installation
@@ -96,6 +122,249 @@ Creates the PKI directory structure and generates root/intermediate CAs:
 ```bash
 ./pki-manager.sh init
 ```
+
+### Install Root Certificate
+The cert you want to install in your machines' trust stores is the root CA certificate:
+
+pki/root/certs/ca.crt
+
+Why the root, not the intermediate. This is a two-tier PKI:
+
+Root CA (ca.crt)  ──signs──►  Intermediate CA (intermediate.crt)  ──signs──►  service certs
+
+A client trusts a service cert if it can build a chain from the service cert up to a CA it already trusts. If you
+install the root, the client can validate the whole chain (root → intermediate → service). That's the one cert you
+distribute, and it covers every cert your PKI will ever issue — including future intermediates if you rotate them.
+
+If you installed the intermediate instead, you'd have to redistribute it every time the intermediate rotates (yours is
+set to a 2-year validity), so the root is the right anchor.
+
+The other half: serve the chain
+
+Installing the root is necessary but not sufficient. Each service must present its leaf cert + the intermediate so the
+client can link the service cert back to the trusted root. Clients don't fetch the intermediate on their own here.
+That's what this file is for:
+
+pki/chains/cybertron-intermediate-chain.crt
+
+Configure the service (nginx, etc.) to serve that chain as its certificate file. Do not put the root in the served
+chain — the client already has it.
+
+Installing the root CA on clients
+
+- Linux (Debian/Ubuntu): copy ca.crt to /usr/local/share/ca-certificates/cybertron-root.crt, then sudo
+update-ca-certificates
+- Linux (RHEL/Fedora): copy to /etc/pki/ca-trust/source/anchors/, then sudo update-ca-trust
+- macOS: sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ca.crt
+- Windows (preferred — also sets Friendly Name + Intended Purposes). `init` produces a cert-only PKCS#12 at
+`pki/chains/<org>-root.p12` (empty password, no private key). Import it as admin:
+  `Import-PfxCertificate -FilePath .\pki\chains\<org>-root.p12 -CertStoreLocation Cert:\LocalMachine\Root`
+  (or `certutil -importpfx Root .\pki\chains\<org>-root.p12`).
+- Windows (plain cert, leaves the Friendly Name / Intended Purposes columns blank): `certutil -addstore -f Root
+.\pki\root\certs\ca.crt`. To add a friendly name after a plain import, set it via the thumbprint:
+  `(Get-Item Cert:\LocalMachine\Root\<thumbprint>).FriendlyName = "Cybertron Root CA"`
+- Browsers: Firefox uses its own store (Settings → Certificates → Authorities → Import); Chrome/Edge use the OS store
+
+Notes:
+- "Intended Purposes" comes from the cert's Extended Key Usage. The root/intermediate now carry `serverAuth, clientAuth`,
+so the column shows "Server Authentication, Client Authentication" after you re-run `init`.
+- "Friendly Name" is not an X.509 field — it only travels inside a PKCS#12, which is why the `.p12` import is preferred.
+- Distribute only the certificate (`ca.crt`) or the cert-only `.p12` — never the root's private key (`pki/root/private/`).
+The cert is public and safe to push everywhere; the key must stay offline.
+
+Verifying:
+- `openssl x509 -in pki/root/certs/ca.crt -noout -text | grep -A1 "Extended Key Usage"` → expect
+`TLS Web Server Authentication, TLS Web Client Authentication`.
+- `openssl pkcs12 -in pki/chains/<org>-root.p12 -nokeys -info -passin pass: | grep -i friendlyName` → expect your
+friendly name. (A `-passin pass: -info` dump should show no PRIVATE KEY.)
+
+root/newcerts/1000.pem is the Intermediate CA certificate, not a service cert:
+
+subject = CN=Intermediate CA   (O=Cybertron)
+issuer  = CN=Root CA           (the root signed it)
+valid   = Jun 5 2026  →  Jun 4 2028   (your 2-year INTERMEDIATE_VALIDITY)
+
+This is normal and expected. When you run init, the root CA signs the intermediate, and OpenSSL's CA database copies
+every cert the root issues into root/newcerts/<serial>.pem. Serial 1000 is the first thing the root ever signed — your
+intermediate. The matching ledger entry confirms it:
+
+root/index.txt:  V  280604104643Z  1000  unknown  /CN=Intermediate CA
+
+(V = valid, serial 1000, the intermediate.)
+
+1000.pem is a copy of intermediate.crt, produced as a byproduct of signing. Let me prove it:
+
+● Bash(echo "=== fingerprint: intermediate/certs/intermediate.crt ===" && openssl x509 -in
+   intermediate/certs/intermediate.crt -noout -fingerprint -sha256 2>/dev/null;…)
+⎿  === fingerprint: intermediate/certs/intermediate.crt ===
+   sha256 Fingerprint=3E:6C:46:92:05:FB:3E:F1:E4:9D:60:67:23:78:C1:06:CB:E5:47:9D:8B:62:C6:85:2F:9F:34:1A:95:F4:6
+   9:8A
+   … +3 lines (ctrl+o to expand)
+
+● Identical fingerprints — they're the same certificate. 1000.pem did not create anything; it's an archived copy of
+intermediate.crt.
+
+The actual order of operations during init
+
+1. Generate intermediate.key        ← a fresh private key, made first
+2. Build a CSR from intermediate.key ← "please sign me, CN=Intermediate CA"
+3. Root CA signs the CSR             ← root uses ITS key (root/private/ca.key)
+4. Output written to TWO places at once:
+      → intermediate/certs/intermediate.crt   (the working copy you use)
+      → root/newcerts/1000.pem                (the root's archive copy)
+
+So the dependency runs the opposite way from what you asked:
+
+- intermediate.key is generated independently, first. Nothing creates it from 1000.pem.
+- intermediate.crt and 1000.pem are byte-for-byte the same file — both are the output of step 3.
+
+Why two copies exist
+
+root/newcerts/1000.pem is part of the root CA's bookkeeping, not something services use. Every time the root signs
+anything, OpenSSL files a copy under newcerts/<serial>.pem and logs a line in root/index.txt. It's the root's
+permanent record of "I issued this cert, serial 1000." You could delete root/newcerts/ and your PKI would still
+function — intermediate.crt is the copy that actually gets used in chains.
+
+Think of it as: the key is the secret (intermediate.key), the crt is the signed public document, and 1000.pem is the
+registrar's filed duplicate of that document.
+
+-
+---
+  The big picture
+
+  You're building a chain of trust. The goal is that a browser or client, presented with nginx.example.com's
+  certificate, can mathematically prove it traces back to something it already trusts — your Root CA. The chain is:
+
+  Root CA  ──signs──►  Intermediate CA  ──signs──►  Service certs (nginx, etc.)
+  (trust anchor)       (daily workhorse)            (leaf certs)
+
+  Each arrow is a digital signature: the issuer hashes the subject's certificate and encrypts that hash with the
+  issuer's private key. Anyone with the issuer's public cert can verify it. That's the entire mechanism.
+
+  ---
+  Step 1 — init builds the structure (pki-manager.sh:507)
+
+  init runs four functions in order. Walking each:
+
+  1a. create_directory_structure (line 201)
+
+  Creates root/ and intermediate/ each with private/ certs/ csr/ newcerts/ crl/, locks the private/ dirs to 700, and
+  seeds two bookkeeping files per CA:
+  - index.txt — the CA's ledger; every cert it signs gets a line here.
+  - serial — the next serial number, starting at 1000. (This is why your intermediate is 1000.pem.)
+
+  These two files are what make OpenSSL's ca command behave like a real CA with a database, rather than just signing
+  blindly.
+
+  1b. generate_root_ca (line 235)
+
+  openssl ecparam -genkey -name prime256v1 -out root/private/ca.key   # the secret
+  openssl req -new -x509 -days 3560 -extensions v3_ca ...             # self-signed cert
+  Two outputs:
+  - ca.key — the root private key. The crown jewels. Whoever has this is your CA.
+  - ca.crt — the root certificate. It's self-signed (issuer == subject == "Root CA") because there's nothing above it.
+  -extensions v3_ca stamps it CA:TRUE, meaning "this cert is allowed to sign other certs." This is the file you install
+  on your computers.
+
+  1c. generate_intermediate_ca (line 247)
+
+  This is the three-move dance you asked about earlier:
+  openssl ecparam -genkey ... -out intermediate/private/intermediate.key   # 1. new key
+  openssl req -new -key intermediate.key -out intermediate.csr ...         # 2. CSR (a request)
+  openssl ca -name root_ca -extensions v3_intermediate_ca -in ...csr \     # 3. root signs it
+     -out intermediate/certs/intermediate.crt
+  - The CSR (Certificate Signing Request) is the intermediate saying "here's my public key and my name (CN=Intermediate
+  CA) — please vouch for me." It's not a cert; it's an application.
+  - The openssl ca step is the root reviewing and signing that application. This is the moment that:
+    - writes intermediate.crt (your working copy),
+    - writes the identical root/newcerts/1000.pem (the root's archive — the duplicate you saw),
+    - records a line in root/index.txt,
+    - bumps root/serial to 1001.
+
+  The intermediate is also CA:TRUE (via v3_intermediate_ca), so it can sign things too — but it's typically CA:TRUE with
+  a pathlen:0 constraint, meaning "I can sign leaf certs but no further sub-CAs."
+
+  1d. create_cert_chain (line 134)
+
+  Bundles certs into ready-to-use files in chains/:
+  cat intermediate.crt root.crt  >  cybertron-ca-chain.crt          # full chain
+  cp  intermediate.crt           >  cybertron-intermediate-chain.crt # just intermediate
+  These exist so you don't have to assemble chains by hand later.
+
+  ---
+  Step 2 — distribute the trust anchor (the question you started with)
+
+  Install root/certs/ca.crt into every client's OS/browser trust store. Now those machines trust anything your PKI
+  signs, forever (until the root's 10-year validity expires). You do this once per machine.
+
+  You never distribute ca.key. Public cert out to the world; private key stays locked down.
+
+  ---
+  Step 3 — new-cert issues a service certificate (pki-manager.sh:526 → generate_leaf_cert line 356)
+
+  When you run ./pki-manager.sh new-cert nginx example.com:
+
+  # 1. fresh key for this service
+  openssl ecparam -genkey ... -out services/nginx/private/nginx.key
+
+  # 2. CSR for CN=example.com
+  openssl req -new -key nginx.key -out services/nginx/csr/nginx.csr -subj ".../CN=example.com"
+
+  # 3. the INTERMEDIATE signs it (note: -name intermediate_ca, not root_ca)
+  openssl ca -name intermediate_ca -extensions server_cert -days 180 \
+     -in nginx.csr -out services/nginx/certs/nginx.crt
+
+  Key points:
+  - The intermediate signs leaf certs, not the root. That's why a service cert's record lands in intermediate/index.txt
+  and intermediate/newcerts/, not root's. (This is exactly why your intermediate/newcerts/ is empty — you haven't issued
+  a service cert yet.)
+  - -extensions server_cert stamps it CA:FALSE + extendedKeyUsage=serverAuth — i.e. "this is an end TLS server cert, it
+  cannot sign anything." That distinction is what stops a leaked service cert from becoming a rogue CA.
+  - SANs (Subject Alternative Names): if you pass extra names/IPs, format_san (line 264) + create_temp_config (line 284)
+  build a temp config adding subjectAltName = DNS:...,IP:.... Modern browsers ignore CN and require SANs, so for real
+  use, always pass the domain(s) as SANs:
+  ./pki-manager.sh new-cert nginx example.com www.example.com 192.168.1.10
+
+  3b. create_service_chain (line 156)
+
+  cat nginx.crt intermediate.crt > services/nginx/chains/nginx-chain.crt
+  This leaf + intermediate bundle is what you hand to nginx. It deliberately omits the root — the client already has the
+  root installed (Step 2), and a server shouldn't send its own trust anchor.
+
+  ---
+  Step 4 — how validation actually works at connect time
+
+  Client connects to nginx. nginx presents nginx-chain.crt (leaf + intermediate). The client then:
+
+  1. Reads the leaf → "issued by Intermediate CA." Verifies the intermediate's signature on it. ✓
+  2. Reads the intermediate → "issued by Root CA." Verifies the root's signature on it. ✓
+  3. Looks for "Root CA" in its trust store → finds it (because you did Step 2). ✓
+  4. Checks each cert is in date, not revoked, and the hostname matches a SAN. ✓
+
+  All four pass → green padlock. Remove any link (don't install the root, or don't serve the intermediate) and the chain
+  breaks.
+
+  ---
+  Step 5 — operational lifecycle
+
+  - offline-root PATH (line 70): backs up the root key/cert + ledger to an encrypted tarball with checksums, then shreds
+  ca.key off disk. This is best practice: an attacker can't steal a key that isn't there. You only restore it from
+  backup on the rare occasion you need to issue a new intermediate. The intermediate stays online for daily new-cert
+  work.
+  - check [service] (line 436): reads each cert's notAfter and warns under 30 days. Your validities — root 10yr,
+  intermediate 2yr, leaf 6mo — mean leaves rotate often (good; limits blast radius) and you re-issue them with new-cert
+  before expiry.
+  - backup (line 214): tars the whole PKI excluding private/, so you can archive structure/ledgers without exposing
+  keys.
+
+  ---
+  The one-paragraph version
+
+  init makes a self-signed Root CA (ca.crt — install this everywhere), which signs an Intermediate CA (intermediate.crt
+  — the duplicate you found at root/newcerts/1000.pem). Day to day, new-cert has the intermediate sign short-lived
+  service certs, bundled with the intermediate as a chain you feed to nginx. Clients trust those services because the
+  chain leads back to the root they already have installed. Then you take the root offline and rotate leaves as they
+  expire.
 
 ### Generate Service Certificate
 
@@ -183,14 +452,4 @@ Creates a backup of the PKI directory:
    ```bash
    openssl req -config openssl.conf -test
    ```
-
-## Future Planned Features
-
-- Certificate Revocation
-- Interactive init
-- Dockerized Version
-- Webserver to serve/download certificates
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
+   

@@ -128,6 +128,9 @@ subjectKeyIdentifier = hash
 authorityKeyIdentifier = keyid:always,issuer
 basicConstraints = critical, CA:true
 keyUsage = critical, digitalSignature, cRLSign, keyCertSign
+# Populates the Windows "Intended Purposes" column. Non-critical, and a
+# superset of all leaf EKUs (Windows enforces EKU nesting down the chain).
+extendedKeyUsage = serverAuth, clientAuth
 
 # Intermediate CA certificate extensions
 [ v3_intermediate_ca ]
@@ -135,6 +138,7 @@ subjectKeyIdentifier = hash
 authorityKeyIdentifier = keyid:always,issuer
 basicConstraints = critical, CA:true, pathlen:0
 keyUsage = critical, digitalSignature, cRLSign, keyCertSign
+extendedKeyUsage = serverAuth, clientAuth
 
 # Leaf certificate extensions for servers
 [ server_cert ]

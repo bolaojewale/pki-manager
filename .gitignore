@@ -13,3 +13,4 @@ backups/
 .DS_Store
 *.swp
 *.swo
+.pytest_cache/

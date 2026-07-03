@@ -52,7 +52,8 @@ validate_config() {
     local required_vars=(
         "CURVE" "ROOT_VALIDITY" "INTERMEDIATE_VALIDITY" "LEAF_VALIDITY"
         "ROOT_DIR" "OPENSSL_CNF" "COUNTRY" "STATE" "LOCALITY"
-        "ORGANIZATION" "ROOT_CN" "INTERMEDIATE_CN" "LOG_FILE"
+        "ORGANIZATION" "ROOT_OU" "INTERMEDIATE_OU" "LEAF_OU"
+        "ROOT_CN" "INTERMEDIATE_CN" "LOG_FILE"
     )
 
     for var in "${required_vars[@]}"; do
@@ -147,10 +148,30 @@ create_cert_chain() {
     # Create intermediate chain (just intermediate)
     cp "${INTERMEDIATE_CERT}" "${ROOT_DIR}/chains/${org_name}-intermediate-chain.crt"
     chmod 644 "${ROOT_DIR}/chains/${org_name}-intermediate-chain.crt"
-    
+
+    # Cert-only PKCS#12 bundles carrying a Windows "Friendly Name". -nokeys means
+    # no private key is included, so these are safe to distribute. Empty export
+    # password (-passout pass:) lets Windows import them without prompting.
+    local root_fn="${ROOT_FRIENDLY_NAME:-$ROOT_CN}"
+    local int_fn="${INTERMEDIATE_FRIENDLY_NAME:-$INTERMEDIATE_CN}"
+
+    # -caname (not -name) sets the friendlyName on the cert bag; with -nokeys
+    # there is no key bag, so -name would be silently dropped.
+    openssl pkcs12 -export -nokeys -in "${ROOT_CERT}" \
+        -caname "${root_fn}" -passout pass: \
+        -out "${ROOT_DIR}/chains/${org_name}-root.p12"
+    chmod 644 "${ROOT_DIR}/chains/${org_name}-root.p12"
+
+    openssl pkcs12 -export -nokeys -in "${INTERMEDIATE_CERT}" \
+        -caname "${int_fn}" -passout pass: \
+        -out "${ROOT_DIR}/chains/${org_name}-intermediate.p12"
+    chmod 644 "${ROOT_DIR}/chains/${org_name}-intermediate.p12"
+
     log "Certificate chains created at:"
     log "  Full chain (root + intermediate): ${ROOT_DIR}/chains/${org_name}-ca-chain.crt"
     log "  Intermediate chain: ${ROOT_DIR}/chains/${org_name}-intermediate-chain.crt"
+    log "  Root CA PKCS#12 (friendly name '${root_fn}'): ${ROOT_DIR}/chains/${org_name}-root.p12"
+    log "  Intermediate CA PKCS#12 (friendly name '${int_fn}'): ${ROOT_DIR}/chains/${org_name}-intermediate.p12"
 }
 
 create_service_chain() {
@@ -240,7 +261,7 @@ generate_root_ca() {
     log "Generating root CA certificate (valid for ${ROOT_VALIDITY} days)"
     openssl req -config ${OPENSSL_CNF} -key ${ROOT_KEY} -new -x509 -days ${ROOT_VALIDITY} \
         -sha384 -extensions v3_ca -out ${ROOT_CERT} \
-        -subj "/C=${COUNTRY}/ST=${STATE}/L=${LOCALITY}/O=${ORGANIZATION}/CN=${ROOT_CN}"
+        -subj "/C=${COUNTRY}/ST=${STATE}/L=${LOCALITY}/O=${ORGANIZATION}/OU=${ROOT_OU}/CN=${ROOT_CN}"
 }
 
 # Function to generate intermediate CA
@@ -252,7 +273,7 @@ generate_intermediate_ca() {
     log "Generating intermediate CA CSR"
     openssl req -config ${OPENSSL_CNF} -new -sha384 \
         -key ${INTERMEDIATE_KEY} -out ${INTERMEDIATE_CSR} \
-        -subj "/C=${COUNTRY}/ST=${STATE}/L=${LOCALITY}/O=${ORGANIZATION}/CN=${INTERMEDIATE_CN}"
+        -subj "/C=${COUNTRY}/ST=${STATE}/L=${LOCALITY}/O=${ORGANIZATION}/OU=${INTERMEDIATE_OU}/CN=${INTERMEDIATE_CN}"
 
     log "Signing intermediate CA certificate (valid for ${INTERMEDIATE_VALIDITY} days)"
     openssl ca -config ${OPENSSL_CNF} -name root_ca -extensions v3_intermediate_ca \
@@ -369,16 +390,23 @@ generate_leaf_cert() {
         
         mkdir -p ${ROOT_DIR}/services/${SERVICE}/{private,certs,csr}
         
-        # Generate private key
+        # Generate private key (SEC1 format, includes an EC PARAMETERS block)
         openssl ecparam -genkey -name ${CURVE} \
             -out "${ROOT_DIR}/services/${SERVICE}/private/${SERVICE}.key"
         chmod 400 "${ROOT_DIR}/services/${SERVICE}/private/${SERVICE}.key"
+
+        # Also emit a clean PKCS#8 key (single PRIVATE KEY block, no EC
+        # PARAMETERS) for software like Proxmox that rejects the params block
+        openssl pkcs8 -topk8 -nocrypt \
+            -in "${ROOT_DIR}/services/${SERVICE}/private/${SERVICE}.key" \
+            -out "${ROOT_DIR}/services/${SERVICE}/private/${SERVICE}-pkcs8.key"
+        chmod 400 "${ROOT_DIR}/services/${SERVICE}/private/${SERVICE}-pkcs8.key"
         
         # Generate CSR
         openssl req -config ${OPENSSL_CNF} -new -sha384 \
             -key "${ROOT_DIR}/services/${SERVICE}/private/${SERVICE}.key" \
             -out "${ROOT_DIR}/services/${SERVICE}/csr/${SERVICE}.csr" \
-            -subj "/C=${COUNTRY}/ST=${STATE}/L=${LOCALITY}/O=${ORGANIZATION}/CN=${DOMAIN}"
+            -subj "/C=${COUNTRY}/ST=${STATE}/L=${LOCALITY}/O=${ORGANIZATION}/OU=${LEAF_OU}/CN=${DOMAIN}"
         
         # Sign certificate with appropriate extensions
         if [[ ${#ALTERNATE_NAMES[@]} -gt 0 ]]; then
